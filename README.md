@@ -111,7 +111,9 @@ O mesmo acontece com o chamado do barbeiro: ele liga `_chamando = true`, e cada 
 
 No log, essas linhas aparecem em vermelho com `!! ... (RACE CONDITION)`, e no relatório as verificações 2 e 3 dão `[ERRO]`.
 
-<!-- Print do log da Ingênua 1: adicionar aqui (docs/ingenua1.png) -->
+Execução real (`dotnet run`): a sala de espera chegou a 4 clientes para 3 cadeiras e até 4 clientes sentaram juntos na cadeira do barbeiro, enquanto ele fez só 4 cortes para 15 clientes "atendidos".
+
+![Log da Ingênua 1](docs/ingenua1.png)
 
 ---
 
