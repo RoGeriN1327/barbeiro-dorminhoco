@@ -8,10 +8,18 @@
 ## Como executar
 
 ```bash
-dotnet run
+dotnet run          # abre o menu
+dotnet run -- 2     # roda direto a opção 2, sem menu
 ```
 
-> Estado atual (Entrega 1): o programa roda direto a **Solução Ingênua 1**. O menu com todas as soluções entra na Entrega 2.
+| Opção | Solução | O que acontece |
+|---|---|---|
+| 1 | Ingênua 1 · sem controle de concorrência | Race condition: mais de 3 clientes na espera e vários na cadeira do barbeiro |
+| 2 | Ingênua 2 · lock + laço infinito | Espera ocupada: o barbeiro pergunta milhões de vezes e gasta CPU com a barbearia vazia |
+| 3 | Ingênua 3 · campainha sem memória (`Monitor.Pulse`) | Lost wakeup: avisos se perdem e o barbeiro dorme com clientes esperando (impasse) |
+| 4 | Solução ideal (`SemaphoreSlim` + `lock`) | Entrega 3 |
+| 5 | Comparar desempenho | Entrega 3 |
+| 0 | Sair | |
 
 Todos os parâmetros do cenário (clientes, cadeiras, tempos, janela da corrida, prazo) ficam em [`Config.cs`](Config.cs).
 
@@ -57,7 +65,7 @@ Uma barbearia tem **1 barbeiro**, **1 cadeira de corte** e **3 cadeiras de esper
 |---|---|---|---|
 | **Ingênua 1** · sem controle | Cliente lê `esperando`, e se houver vaga faz `esperando++`, tudo sem lock. O barbeiro chama o próximo ligando uma flag comum. | **Condição de corrida (race condition)**: entre olhar e sentar, outro cliente vê a mesma vaga → 4 ou 5 clientes em 3 cadeiras; dois clientes veem o mesmo chamado → 2 na cadeira do barbeiro. | 1 e 2 |
 | **Ingênua 2** · lock + laço infinito | O contador passa a ser protegido por `lock`, mas o barbeiro fica em `while (true) { lock { if (esperando > 0) ... } }` perguntando sem parar. | **Espera ocupada (busy waiting)**: barbearia vazia e um núcleo de CPU perto de 100%; o barbeiro ainda segura o lock o tempo todo e atrasa quem quer entrar. | 3 |
-| **Ingênua 3** · dormir e acordar sem contador | O barbeiro olha a fila, vê zero, solta o lock e vai dormir em um sinal sem memória (ex.: `ManualResetEventSlim` resetado antes de dormir / `Monitor.Wait` fora do lock certo). | **Lost wakeup (sinal perdido)**: o cliente entra e toca a "campainha" entre o barbeiro olhar e dormir; o aviso se perde e o barbeiro dorme para sempre com clientes esperando (impasse). | 4 |
+| **Ingênua 3** · dormir e acordar sem contador | O barbeiro dorme em `Monitor.Wait` e o cliente toca a "campainha" com `Monitor.Pulse`; o barbeiro atende um cliente por toque. | **Lost wakeup (sinal perdido)**: `Pulse` não tem memória. O cliente que toca enquanto o barbeiro está cortando perde o aviso, e o barbeiro dorme para sempre com clientes esperando (impasse). | 4 |
 
 ### Solução ideal
 
@@ -76,6 +84,8 @@ Por que resolve: `Release()` **guarda** o aviso no contador interno do semáforo
 1. `[OK]` **atendidos + desistentes = 20** · nenhum cliente sumiu ou ficou sem resposta.
 2. `[OK]` **nunca mais de 3 clientes esperando** · maior ocupação real da sala de espera ≤ 3.
 3. `[OK]` **um corte por vez** · nunca houve mais de 1 cliente na cadeira do barbeiro.
+
+Além das 3 obrigatórias, o relatório tem uma 4ª verificação para a regra 3: **repouso real**, que dá `[ERRO]` se o processo usar mais de 20% de um núcleo em média (CPU medida com `Process.TotalProcessorTime`).
 
 As medições usam uma classe de instrumentação própria ([`Infra/Estatisticas.cs`](Infra/Estatisticas.cs)) com `Interlocked`, separada das variáveis de cada solução: assim o relatório mede o que realmente aconteceu, mesmo quando a solução ingênua "acha" outra coisa.
 
@@ -114,6 +124,52 @@ No log, essas linhas aparecem em vermelho com `!! ... (RACE CONDITION)`, e no re
 Execução real (`dotnet run`): a sala de espera chegou a 4 clientes para 3 cadeiras e até 4 clientes sentaram juntos na cadeira do barbeiro, enquanto ele fez só 4 cortes para 15 clientes "atendidos".
 
 ![Log da Ingênua 1](docs/ingenua1.png)
+
+---
+
+## Entrega 2 · Demais soluções ingênuas e menu
+
+Arquivos novos: [`Program.cs`](Program.cs) (menu), [`Solucoes/Ingenua2EsperaOcupada.cs`](Solucoes/Ingenua2EsperaOcupada.cs), [`Solucoes/Ingenua3SinalPerdido.cs`](Solucoes/Ingenua3SinalPerdido.cs) e [`Solucoes/Ficha.cs`](Solucoes/Ficha.cs) (a ficha do cliente na fila, com os eventos "chamado", "corte terminado" e "levantou").
+
+O relatório ganhou os contadores **voltas ociosas do barbeiro**, **avisos de chegada perdidos** e **CPU usada**. A barbearia agora abre 1 s antes do primeiro cliente (`Config.AberturaMs`), para mostrar como cada solução espera quando não há ninguém.
+
+### Ingênua 2 · espera ocupada
+
+O que mudou: a fila de espera fica dentro de um `lock`, então olhar e sentar viram uma operação só, e o barbeiro tira um cliente por vez. Com isso as verificações 1, 2 e 3 dão `[OK]`.
+
+O problema: o barbeiro não tem como dormir. Ele fica neste laço:
+
+```csharp
+while (!ct.IsCancellationRequested)          // o while (true) do slide
+{
+    lock (_trava) { if (_fila.Count > 0) proximo = _fila.Dequeue(); }
+    if (proximo is null) { voltas++; continue; }   // 0 clientes: pergunta de novo, JÁ!
+    ...
+}
+```
+
+No 1 s em que a barbearia está vazia ele perguntou **mais de 55 milhões de vezes** se havia cliente, e o processo usou **46% de um núcleo** em média só com isso. A cada volta ele ainda pega o `lock`, disputando a "porta" com os clientes que querem sentar. Viola a regra 3 (repouso real), e a 4ª verificação dá `[ERRO]`.
+
+![Log da Ingênua 2](docs/ingenua2.png)
+
+### Ingênua 3 · lost wakeup
+
+O que mudou: o barbeiro passa a dormir de verdade em `Monitor.Wait`, então a CPU fica perto de 0%. A ideia ingênua é "cada cliente toca a campainha uma vez, então eu acordo uma vez por cliente":
+
+```csharp
+// cliente, depois de sentar
+lock (_campainha) { Monitor.Pulse(_campainha); }
+
+// barbeiro
+lock (_campainha) { Monitor.Wait(_campainha); }   // dorme até tocar
+// tira UM cliente da fila, corta e volta a dormir sem olhar a fila
+```
+
+O problema: `Monitor.Pulse` só acorda quem **já está** em `Monitor.Wait`. Os clientes que chegam enquanto o barbeiro está cortando tocam a campainha, mas ninguém está esperando, e o toque some. Ao terminar o corte, o barbeiro volta a dormir com 3 clientes na sala, e eles esperam para sempre: **impasse**. O programa só termina por causa do prazo de 8 s (`Config.PrazoIngenuaMs`). A verificação 1 dá `[ERRO]` (1 atendido + 16 desistentes = 17, faltam 3). Viola a regra 4 (despertar exato).
+
+É exatamente isso que a solução ideal corrige: o `SemaphoreSlim` **conta** os `Release()`, então o aviso fica guardado mesmo se o barbeiro não estiver esperando naquele instante.
+
+![Log da Ingênua 3](docs/ingenua3.png)
 
 ---
 

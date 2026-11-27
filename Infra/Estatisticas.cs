@@ -29,6 +29,26 @@ public sealed class Estatisticas
     public void NaoAtendido() => Interlocked.Increment(ref _naoAtendidos);
     public void CorteRealizado() => Interlocked.Increment(ref _cortes);
 
+    // Contadores de sinalização: mostram as regras 3 (repouso real) e 4 (despertar exato).
+    private long _voltasOciosas;
+    private int _sinaisPerdidos;
+
+    /// <summary>Vezes que o barbeiro olhou a fila, não achou ninguém e perguntou de novo sem dormir.</summary>
+    public long VoltasOciosas => Interlocked.Read(ref _voltasOciosas);
+    /// <summary>Avisos de chegada que ninguém recebeu (o barbeiro não estava esperando o sinal).</summary>
+    public int SinaisPerdidos => Volatile.Read(ref _sinaisPerdidos);
+
+    public void RegistrarVoltasOciosas(long voltas) => Interlocked.Add(ref _voltasOciosas, voltas);
+    public void SinalPerdido() => Interlocked.Increment(ref _sinaisPerdidos);
+
+    // Uso de CPU do processo durante a execução (preenchido pela Barbearia).
+    public TimeSpan TempoCpu { get; set; }
+    public TimeSpan TempoTotal { get; set; }
+
+    /// <summary>Percentual de UM núcleo usado em média: 100% = um núcleo ocupado o tempo todo.</summary>
+    public double PercentualNucleo =>
+        TempoTotal.TotalMilliseconds > 0 ? 100.0 * TempoCpu.TotalMilliseconds / TempoTotal.TotalMilliseconds : 0;
+
     /// <returns>Quantos clientes estão de fato na sala de espera depois desta entrada.</returns>
     public int EntrouNaEspera()
     {
